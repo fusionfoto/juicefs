@@ -1418,12 +1418,12 @@ func clearSUGID(ctx Context, cur *Attr, set *Attr) {
 	case "linux":
 		// same as ext
 		if cur.Typ != TypeDirectory {
-			if ctx.Uid() != 0 || (cur.Mode>>3)&1 != 0 {
+			if (cur.Mode>>3)&1 != 0 || (ctx.Uid() != 0 && !containsGid(ctx, cur.Gid)) {
 				// clear SUID and SGID
 				cur.Mode &= 01777
 				set.Mode &= 01777
 			} else {
-				// keep SGID if the file is non-group-executable
+				// keep non-executable SGID for root or members of the file's group
 				cur.Mode &= 03777
 				set.Mode &= 03777
 			}
@@ -3683,7 +3683,7 @@ func (m *baseMeta) mergeAttr(ctx Context, inode Ino, set uint16, cur, attr *Attr
 		if ctx.Uid() != 0 && ctx.Uid() != cur.Uid {
 			return nil, syscall.EPERM
 		}
-		if cur.Gid != attr.Gid {
+		if attr.Gid != math.MaxUint32 && cur.Gid != attr.Gid {
 			if m.checkPermission(ctx) && ctx.Uid() != 0 && !containsGid(ctx, attr.Gid) {
 				return nil, syscall.EPERM
 			}
@@ -3691,7 +3691,7 @@ func (m *baseMeta) mergeAttr(ctx Context, inode Ino, set uint16, cur, attr *Attr
 			changed = true
 		}
 	}
-	if set&SetAttrUID != 0 && cur.Uid != attr.Uid {
+	if set&SetAttrUID != 0 && attr.Uid != math.MaxUint32 && cur.Uid != attr.Uid {
 		if m.checkPermission(ctx) && ctx.Uid() != 0 {
 			return nil, syscall.EPERM
 		}

@@ -1610,7 +1610,9 @@ func (m *dbMeta) doGetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
 }
 
 func (m *dbMeta) doSetAttr(ctx Context, inode Ino, set uint16, sugidclearmode uint8, attr *Attr, oldAttr *Attr) syscall.Errno {
+	uid, gid := attr.Uid, attr.Gid
 	return errno(m.txn(func(s *xorm.Session) error {
+		attr.Uid, attr.Gid = uid, gid // Restore the request, including unchanged IDs, on retry.
 		var cur = node{Inode: inode}
 		ok, err := s.ForUpdate().Get(&cur)
 		if err != nil {

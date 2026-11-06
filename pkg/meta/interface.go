@@ -460,6 +460,7 @@ type Meta interface {
 	// GetAttr returns the attributes for given node.
 	GetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno
 	// SetAttr updates the attributes for given node.
+	// For SetAttrUID/SetAttrGID, math.MaxUint32 keeps the corresponding ID unchanged.
 	SetAttr(ctx Context, inode Ino, set uint16, sggidclearmode uint8, attr *Attr) syscall.Errno
 	// Check setting attr is allowed or not
 	CheckSetAttr(ctx Context, inode Ino, set uint16, attr Attr) syscall.Errno

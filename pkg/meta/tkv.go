@@ -1288,7 +1288,9 @@ func (m *kvMeta) doGetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
 }
 
 func (m *kvMeta) doSetAttr(ctx Context, inode Ino, set uint16, sugidclearmode uint8, attr *Attr, oldAttr *Attr) syscall.Errno {
+	uid, gid := attr.Uid, attr.Gid
 	return errno(m.txn(ctx, func(tx *kvTxn) error {
+		attr.Uid, attr.Gid = uid, gid // Restore the request, including unchanged IDs, on retry.
 		var cur Attr
 		a := tx.get(m.inodeKey(inode))
 		if a == nil {

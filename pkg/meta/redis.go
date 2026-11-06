@@ -1387,7 +1387,9 @@ func (m *redisMeta) doFallocate(ctx Context, inode Ino, mode uint8, off uint64, 
 }
 
 func (m *redisMeta) doSetAttr(ctx Context, inode Ino, set uint16, sugidclearmode uint8, attr *Attr, oldAttr *Attr) syscall.Errno {
+	uid, gid := attr.Uid, attr.Gid
 	return errno(m.txn(ctx, func(tx *redis.Tx) error {
+		attr.Uid, attr.Gid = uid, gid // Restore the request, including unchanged IDs, on retry.
 		var cur Attr
 		a, err := tx.Get(ctx, m.inodeKey(inode)).Bytes()
 		if err != nil {
