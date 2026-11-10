@@ -213,7 +213,121 @@ func (c *ceph) Head(_ context.Context, key string) (Object, error) {
 	return o, err
 }
 
-func (c *ceph) ListAll(_ context.Context, prefix, marker string, followLink bool) (<-chan Object, error) {
+func (c *ceph) ListAll(ctx context.Context, prefix, marker string, followLink bool) (<-chan Object, error) {
+	if isUnorderedList(ctx) {
+		objs := make(chan Object, 1000)
+		go func() {
+			defer close(objs)
+			err := c.listUnordered(ctx, prefix, marker, func(o *obj) error {
+				select {
+				case objs <- o:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			if err != nil && ctx.Err() == nil {
+				logger.Errorf("List %s: %s", c, err)
+				select {
+				case objs <- nil:
+				case <-ctx.Done():
+				}
+			}
+		}()
+		return objs, nil
+	}
+	return c.listAllInMemory(prefix, marker)
+}
+
+// listUnordered emits all objects after marker with prefix, in the pool's iteration order.
+func (c *ceph) listUnordered(ctx context.Context, prefix, marker string, emit func(*obj) error) error {
+	const concurrent = 20
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	keys := make(chan string, 1000)
+	errs := make(chan error, concurrent)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := c.statKeys(keys, emit); err != nil {
+				errs <- err
+				cancel()
+			}
+		}()
+	}
+	iterErr := c.iterKeys(ctx, prefix, marker, keys)
+	close(keys)
+	wg.Wait()
+	select {
+	case err := <-errs:
+		return err
+	default:
+		return iterErr
+	}
+}
+
+func (c *ceph) iterKeys(ctx context.Context, prefix, marker string, keys chan<- string) error {
+	ioctx, err := c.newContext()
+	if err != nil {
+		return err
+	}
+	iter, err := ioctx.Iter()
+	if err != nil {
+		ioctx.Destroy()
+		return err
+	}
+	for iter.Next() {
+		key := iter.Value()
+		if key == "" || key <= marker || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		select {
+		case keys <- key:
+		case <-ctx.Done():
+			iter.Close()
+			ioctx.Destroy()
+			return ctx.Err()
+		}
+	}
+	err = iter.Err()
+	iter.Close()
+	if err != nil {
+		ioctx.Destroy()
+		return fmt.Errorf("iterate pool %s: %w", c.name, err)
+	}
+	c.release(ioctx)
+	return nil
+}
+
+// statKeys stats keys and emits them; it keeps draining keys after a failure so the iterator never blocks.
+func (c *ceph) statKeys(keys <-chan string, emit func(*obj) error) (err error) {
+	ioctx, err := c.newContext()
+	if err != nil {
+		for range keys {
+		}
+		return err
+	}
+	defer ioctx.Destroy()
+	for key := range keys {
+		if err != nil {
+			continue
+		}
+		st, e := ioctx.Stat(key)
+		if errors.Is(e, rados.ErrNotFound) {
+			logger.Debugf("Skip non-existent key: %s", key)
+			continue
+		} else if e != nil {
+			err = fmt.Errorf("stat key %s: %w", key, e)
+			continue
+		}
+		err = emit(&obj{key, int64(st.Size), st.ModTime, strings.HasSuffix(key, "/"), "", ""})
+	}
+	return err
+}
+
+func (c *ceph) listAllInMemory(prefix, marker string) (<-chan Object, error) {
 	ctx, err := c.newContext()
 	if err != nil {
 		return nil, err
